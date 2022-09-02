@@ -10,10 +10,8 @@ from pyppeteer_stealth import stealth
 
 os.environ["PYPPETEER_CHROMIUM_REVISION"] = "975570"
 
-INTERVAL = 1
+INTERVAL = 2
 RETRY_LIMIT = 10
-
-SET_ = set()
 
 
 async def stop_video_play(page: Page):
@@ -24,18 +22,15 @@ async def stop_video_play(page: Page):
     )
 
     if player_status == 1:
-        await page.evaluate("() => document.getElementById('movie_player').click()")
+        await page.evaluate("{document.getElementById('movie_player').click()}")
 
 
 async def to_bottom_of_page(page: Page):
     await page.evaluate(
-        "{window.scrollBy(0, window.scrollBy(0, 10000000000000000000000000000));}"
-    )
-
-
-async def remove_read_el(page: Page, tag: str):
-    await page.evaluate(
-        f"() => document.querySelectorAll('{tag}').forEach(el=> el.remove())"
+        """{
+            var height = document.getElementsByTagName("ytd-app")[0].scrollHeight;
+            window.scrollBy(0, window.scrollBy(0, height));
+        }"""
     )
 
 
@@ -75,36 +70,34 @@ async def extract_el(el):
 
 async def get_comments(page: Page) -> List:
     s_time = time.time()
-    error_times = 0
-    list_ = []
+
+    await to_bottom_of_page(page)
+    total_el = await page.waitForXPath("//*[@id='count']/yt-formatted-string/span[1]")
+    total = int(
+        (await (await total_el.getProperty("innerText")).jsonValue()).replace(",", "")
+    )
 
     target_xpath = "//ytd-comment-thread-renderer"
-
-    await remove_read_el(page, "ytd-comment-thread-renderer")
-
     count = len(await page.xpath(target_xpath))
+    prev_count = 0
 
-    while count == 0 and error_times <= RETRY_LIMIT:
+    retry_times = 0
+    while count <= total and retry_times < RETRY_LIMIT:
+        if count == prev_count:
+            retry_times = retry_times + 1
+        else:
+            retry_times = 0
+
         await to_bottom_of_page(page)
         await asyncio.sleep(INTERVAL)
-        error_times = error_times + 1
+        prev_count = count
         count = len(await page.xpath(target_xpath))
+        print(count)
 
-    if error_times == RETRY_LIMIT:
-        return list_, False
-
+    list_ = []
     comments = await page.xpath(target_xpath)
     for i in comments:
         list_.append(await extract_el(i))
-
-    # is count diff, re-extract
-    await asyncio.sleep(INTERVAL)
-    now_count = len(await page.xpath(target_xpath))
-    if now_count != count:
-        list_ = []
-        comments = await page.xpath(target_xpath)
-        for i in comments:
-            list_.append(await extract_el(i))
 
     print(time.time() - s_time)
     return list_, True
@@ -113,7 +106,7 @@ async def get_comments(page: Page) -> List:
 async def main():
     video_id = "OnxxkBTlU8A"  # u can change video id here
 
-    browser = await launch(headless=False)
+    browser = await launch()
     try:
         page = await browser.newPage()
         await stealth(page)
@@ -123,15 +116,11 @@ async def main():
 
         await page.goto(f"https://www.youtube.com/watch?v={video_id}")
         await stop_video_play(page)
+        await to_bottom_of_page(page)
 
-        list_ = []
-        comments, next_page = await get_comments(page)
-        while next_page:
-            list_.extend(comments)
-            comments, next_page = await get_comments(page)
-            print(len(list_))
+        comments = await get_comments(page)
         with open("result.json", "w") as f:
-            json.dump(list_, f)
+            json.dump(comments, f)
     finally:
         await browser.close()
 
